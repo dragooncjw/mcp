@@ -17,7 +17,7 @@ export default async function handler(req: any, res: any) {
   if (!stream) {
     // 普通 JSON 转发
     try {
-      const resp = await fetch('https://deepwiki.example.com/mcp', {
+      const resp = await fetch('https://mcp.deepwiki.com/mcp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -41,7 +41,7 @@ export default async function handler(req: any, res: any) {
   res.setHeader('X-Accel-Buffering', 'no');
 
   try {
-    const resp = await fetch('https://deepwiki.example.com/mcp', {
+    const resp = await fetch('https://mcp.deepwiki.com/mcp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
