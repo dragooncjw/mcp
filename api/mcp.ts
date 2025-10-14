@@ -69,12 +69,7 @@ resourceMap.set(
 );
 
 // ----------------------------
-// 6. Edge Runtime 配置
-// ----------------------------
-export const config = { runtime: 'edge' };
-
-// ----------------------------
-// 7. Dispatcher
+// 6. Dispatcher
 // ----------------------------
 async function dispatchMcpRequest(method: string, params: any) {
   if (toolMap.has(method)) return await toolMap.get(method).execute(params);
@@ -94,42 +89,40 @@ async function* dispatchMcpStream(method: string, params: any) {
 }
 
 // ----------------------------
-// 8. HTTP Handler
+// 7. Node.js HTTP Handler
 // ----------------------------
-export default async function handler(req: Request) {
-  if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+export default async function handler(req: any, res: any) {
+  if (req.method !== 'POST') {
+    res.statusCode = 405;
+    return res.end('Method Not Allowed');
+  }
 
-  const { method, params, stream } = await req.json();
-  const encoder = new TextEncoder();
+  const { method, params, stream } = req.body;
 
   if (!stream) {
-    const result = await dispatchMcpRequest(method, params);
-    return new Response(JSON.stringify({ result }), { headers: { 'Content-Type': 'application/json' } });
+    try {
+      const result = await dispatchMcpRequest(method, params);
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ result }));
+    } catch (err: any) {
+      res.statusCode = 500;
+      return res.end(JSON.stringify({ error: err.message }));
+    }
   }
 
   // 流式响应
-  const streamBody = new ReadableStream({
-    async start(controller) {
-      try {
-        for await (const chunk of dispatchMcpStream(method, params)) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-        }
-        controller.enqueue(encoder.encode('event: end\n\n'));
-        controller.close();
-      } catch (err: any) {
-        controller.enqueue(
-          encoder.encode(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`)
-        );
-        controller.close();
-      }
-    },
-  });
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
 
-  return new Response(streamBody, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    },
-  });
+  try {
+    for await (const chunk of dispatchMcpStream(method, params)) {
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    }
+    res.write('event: end\n\n');
+    res.end();
+  } catch (err: any) {
+    res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
+    res.end();
+  }
 }
