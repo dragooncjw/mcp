@@ -52,7 +52,7 @@ async function* dispatchMcpStream(method: string, params: any) {
 }
 
 // ----------------------------
-// 3. Node.js Serverless Handler
+// 3. Vercel Node.js Serverless Handler
 // ----------------------------
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -78,7 +78,9 @@ export default async function handler(req: any, res: any) {
 
   const { method, params, stream } = body;
 
-  // 非流式请求
+  // ----------------------------
+  // 非流式请求，返回完整 JSON
+  // ----------------------------
   if (!stream) {
     try {
       const result = await dispatchMcpRequest(method, params);
@@ -91,16 +93,20 @@ export default async function handler(req: any, res: any) {
     }
   }
 
-  // 流式 SSE 响应
+  // ----------------------------
+  // 流式 SSE 响应（Inspector Streamable HTTP）
+  // ----------------------------
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // 避免代理缓存
 
   try {
     for await (const chunk of dispatchMcpStream(method, params)) {
       res.write(`data: ${JSON.stringify(chunk)}\n\n`);
     }
-    res.write('event: end\n\n');
+    // 发送 end 事件
+    res.write(`event: end\n\n`);
     res.end();
   } catch (err: any) {
     res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
