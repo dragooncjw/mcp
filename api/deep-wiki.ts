@@ -1,25 +1,27 @@
 // api/mcp-proxy.ts
 import { z } from 'zod';
 import fetch from 'node-fetch';
+import { Readable } from 'stream';
 
 // ----------------------------
-// 1. 工具 / Prompt / Resource 注册
+// 1. 工具注册
 // ----------------------------
 const toolMap = new Map<string, (params: any) => Promise<any>>();
-const promptMap = new Map<string, (params: any) => Promise<any>>();
-const resourceMap = new Map<string, (params: any) => Promise<any>>();
 
-// 本地工具示例
+// 普通加法工具
 toolMap.set('add', async ({ a, b }: { a: number; b: number }) => ({
   content: [{ type: 'text', text: `${a + b}` }],
 }));
 
-// DeepWiki 工具
+// DeepWiki 工具（Node.js SSE 兼容）
 toolMap.set('deepwiki', async ({ query }: { query: string }) => {
   const upstreamUrl = 'https://mcp.deepwiki.com/sse';
   const body = {
     method: 'ask_question',
-    params: { repoName: 'bytedance/flowgram.ai', question: query },
+    params: {
+      repoName: 'bytedance/flowgram.ai',
+      question: query,
+    },
   };
 
   const resp = await fetch(upstreamUrl, {
@@ -28,15 +30,40 @@ toolMap.set('deepwiki', async ({ query }: { query: string }) => {
     body: JSON.stringify(body),
   });
 
-  const text = await resp.text();
-
-  // 尝试解析 JSON
-  try {
-    const json = JSON.parse(text);
-    return { content: json.result?.content ?? [{ type: 'text', text: JSON.stringify(json) }] };
-  } catch (err) {
-    return { content: [{ type: 'text', text: text }] };
+  if (!resp.body) {
+    return { content: [{ type: 'text', text: 'No response from DeepWiki' }] };
   }
+
+  // Node.js 流式读取 SSE
+  const reader = Readable.from(resp.body as any);
+  let buffer = '';
+  const finalContent: any[] = [];
+
+  for await (const chunk of reader) {
+    buffer += chunk.toString();
+
+    const events = buffer.split('\n\n');
+    buffer = events.pop() || '';
+
+    for (const event of events) {
+      if (!event.trim()) continue;
+      if (event.startsWith('data:')) {
+        try {
+          const json = JSON.parse(event.replace(/^data:\s*/, ''));
+          if (json.content) finalContent.push(...json.content);
+        } catch {
+          finalContent.push({ type: 'text', text: event });
+        }
+      }
+    }
+  }
+
+  // 剩余 buffer 也加入 finalContent
+  if (buffer.trim()) {
+    finalContent.push({ type: 'text', text: buffer });
+  }
+
+  return { content: finalContent };
 });
 
 // ----------------------------
@@ -44,9 +71,6 @@ toolMap.set('deepwiki', async ({ query }: { query: string }) => {
 // ----------------------------
 async function dispatchMcpRequest(method: string, params: any) {
   if (toolMap.has(method)) return await toolMap.get(method)!(params);
-  if (promptMap.has(method)) return await promptMap.get(method)!(params);
-  if (resourceMap.has(method)) return await resourceMap.get(method)!(params);
-
   throw new Error(`Unknown MCP method: ${method}`);
 }
 
@@ -60,7 +84,7 @@ async function* dispatchMcpStream(method: string, params: any) {
 }
 
 // ----------------------------
-// 3. Vercel Serverless Handler
+// 3. Vercel Handler
 // ----------------------------
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -74,11 +98,13 @@ export default async function handler(req: any, res: any) {
   try {
     body = req.body ?? (await new Promise((resolve, reject) => {
       let data = '';
-      req.on('data', chunk => (data += chunk));
+      req.on('data', (chunk: Buffer | string) => {
+        data += chunk.toString();
+      });
       req.on('end', () => resolve(JSON.parse(data)));
       req.on('error', reject);
     }));
-  } catch (err) {
+  } catch {
     res.statusCode = 400;
     res.setHeader('Content-Type', 'application/json');
     return res.end(JSON.stringify({ error: 'Invalid JSON body' }));
