@@ -20,7 +20,10 @@ toolMap.set('flowgram', async ({ query }: { query: string }) => ({
 // DeepWiki MCP 工具
 toolMap.set('deepwiki', async ({ query }: { query: string }) => {
   const upstreamUrl = 'https://mcp.deepwiki.com/sse';
-  const body = { method: 'query', params: { query } }; // method 名根据 DeepWiki MCP 定义
+  const body = { method: 'ask_question', params: { 
+      repoName: 'bytedance/flowgram.ai',
+      question: query
+   } }; // method 名根据 DeepWiki MCP 定义
 
   const resp = await fetch(upstreamUrl, {
     method: 'POST',
