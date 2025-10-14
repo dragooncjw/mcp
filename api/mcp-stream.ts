@@ -52,7 +52,7 @@ async function* dispatchMcpStream(method: string, params: any) {
 }
 
 // ----------------------------
-// 3. Vercel Node.js Serverless Handler
+// 3. Vercel Serverless Handler
 // ----------------------------
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
@@ -66,7 +66,7 @@ export default async function handler(req: any, res: any) {
   try {
     body = req.body ?? (await new Promise((resolve, reject) => {
       let data = '';
-      req.on('data', (chunk: any) => (data += chunk));
+      req.on('data', chunk => (data += chunk));
       req.on('end', () => resolve(JSON.parse(data)));
       req.on('error', reject);
     }));
@@ -79,37 +79,37 @@ export default async function handler(req: any, res: any) {
   const { method, params, stream } = body;
 
   // ----------------------------
-  // 非流式请求，返回完整 JSON
+  // 流式 SSE 响应（Inspector Streamable HTTP via Proxy）
   // ----------------------------
-  if (!stream) {
+  if (stream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // 禁用代理缓冲
+
     try {
-      const result = await dispatchMcpRequest(method, params);
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ result }));
+      for await (const chunk of dispatchMcpStream(method, params)) {
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      }
+      res.write(`event: end\n\n`);
+      res.end();
     } catch (err: any) {
-      res.statusCode = 500;
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ error: err.message }));
+      res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
+      res.end();
     }
+    return;
   }
 
   // ----------------------------
-  // 流式 SSE 响应（Inspector Streamable HTTP）
+  // 非流式请求，返回完整 JSON
   // ----------------------------
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // 避免代理缓存
-
   try {
-    for await (const chunk of dispatchMcpStream(method, params)) {
-      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-    }
-    // 发送 end 事件
-    res.write(`event: end\n\n`);
-    res.end();
+    const result = await dispatchMcpRequest(method, params);
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify({ result }));
   } catch (err: any) {
-    res.write(`event: error\ndata: ${JSON.stringify({ message: err.message })}\n\n`);
-    res.end();
+    res.statusCode = 500;
+    res.setHeader('Content-Type', 'application/json');
+    return res.end(JSON.stringify({ error: err.message }));
   }
 }
