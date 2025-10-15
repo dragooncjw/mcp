@@ -13,7 +13,7 @@ toolMap.set('add', async ({ a, b }: { a: number; b: number }) => ({
   content: [{ type: 'text', text: `${a + b}` }],
 }));
 
-// DeepWiki 工具（Node.js SSE 兼容）
+// DeepWiki 工具（Vercel 兼容）
 toolMap.set('deepwiki', async ({ query }: { query: string }) => {
   const upstreamUrl = 'https://mcp.deepwiki.com/sse';
   const body = {
@@ -24,46 +24,72 @@ toolMap.set('deepwiki', async ({ query }: { query: string }) => {
     },
   };
 
-  const resp = await fetch(upstreamUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  try {
+    const resp = await fetch(upstreamUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
 
-  if (!resp.body) {
-    return { content: [{ type: 'text', text: 'No response from DeepWiki' }] };
-  }
+    if (!resp.ok) {
+      return { 
+        content: [{ 
+          type: 'text', 
+          text: `DeepWiki API error: ${resp.status} ${resp.statusText}` 
+        }] 
+      };
+    }
 
-  // Node.js 流式读取 SSE
-  const reader = Readable.from(resp.body as any);
-  let buffer = '';
-  const finalContent: any[] = [];
+    if (!resp.body) {
+      return { content: [{ type: 'text', text: 'No response from DeepWiki' }] };
+    }
 
-  for await (const chunk of reader) {
-    buffer += chunk.toString();
+    // Vercel 兼容的流式读取
+    const reader = (resp.body as any).getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const finalContent: any[] = [];
 
-    const events = buffer.split('\n\n');
-    buffer = events.pop() || '';
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-    for (const event of events) {
-      if (!event.trim()) continue;
-      if (event.startsWith('data:')) {
-        try {
-          const json = JSON.parse(event.replace(/^data:\s*/, ''));
-          if (json.content) finalContent.push(...json.content);
-        } catch {
-          finalContent.push({ type: 'text', text: event });
+        buffer += decoder.decode(value, { stream: true });
+        
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || '';
+
+        for (const event of events) {
+          if (!event.trim()) continue;
+          if (event.startsWith('data:')) {
+            try {
+              const json = JSON.parse(event.replace(/^data:\s*/, ''));
+              if (json.content) finalContent.push(...json.content);
+            } catch {
+              finalContent.push({ type: 'text', text: event });
+            }
+          }
         }
       }
+
+      // 处理剩余 buffer
+      if (buffer.trim()) {
+        finalContent.push({ type: 'text', text: buffer });
+      }
+    } finally {
+      reader.releaseLock();
     }
-  }
 
-  // 剩余 buffer 也加入 finalContent
-  if (buffer.trim()) {
-    finalContent.push({ type: 'text', text: buffer });
+    return { content: finalContent };
+  } catch (error: any) {
+    return { 
+      content: [{ 
+        type: 'text', 
+        text: `DeepWiki request failed: ${error.message}` 
+      }] 
+    };
   }
-
-  return { content: finalContent };
 });
 
 // ----------------------------
@@ -93,21 +119,24 @@ export default async function handler(req: any, res: any) {
     return res.end('Method Not Allowed');
   }
 
-  // 解析 JSON body
+  // 解析 JSON body (Vercel 兼容)
   let body: any;
   try {
-    body = req.body ?? (await new Promise((resolve, reject) => {
-      let data = '';
-      req.on('data', (chunk: Buffer | string) => {
-        data += chunk.toString();
-      });
-      req.on('end', () => resolve(JSON.parse(data)));
-      req.on('error', reject);
-    }));
-  } catch {
+    if (req.body) {
+      body = req.body;
+    } else {
+      // 手动解析 body
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(chunk);
+      }
+      const data = Buffer.concat(chunks).toString();
+      body = JSON.parse(data);
+    }
+  } catch (error: any) {
     res.statusCode = 400;
     res.setHeader('Content-Type', 'application/json');
-    return res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    return res.end(JSON.stringify({ error: `Invalid JSON body: ${error.message}` }));
   }
 
   const { method, params, stream } = body;
